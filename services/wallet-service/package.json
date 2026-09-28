@@ -1,0 +1,26 @@
+{
+  "name": "@flow/wallet-service",
+  "version": "1.0.0",
+  "description": "Flow Banking Wallet & Ledger Core Service (gRPC + HTTP)",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "echo \"Tests pending\" && exit 0"
+  },
+  "dependencies": {
+    "@flow/proto": "*",
+    "@grpc/grpc-js": "^1.12.2",
+    "@grpc/proto-loader": "^0.7.13",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "helmet": "^8.0.0",
+    "kafkajs": "^2.2.4",
+    "mongoose": "^8.8.2",
+    "morgan": "^1.10.0",
+    "uuid": "^11.0.3"
+  }
+}
+

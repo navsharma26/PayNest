@@ -1,0 +1,235 @@
+syntax = "proto3";
+
+package flow.wallet.v1;
+
+option go_package = "github.com/flow/banking/proto/wallet/v1;walletv1";
+option java_package = "com.flow.banking.proto.wallet.v1";
+option java_multiple_files = true;
+
+// ============================================================================
+// WalletService Definition
+// ============================================================================
+
+service WalletService {
+  // CheckBalance retrieves real-time ledger balance information for a specified wallet.
+  rpc CheckBalance(WalletId) returns (BalanceResponse);
+
+  // HoldFunds reserves an authorized amount against a wallet balance prior to settlement (Two-Phase Authorization).
+  rpc HoldFunds(HoldRequest) returns (HoldResponse);
+
+  // ExecuteTransfer atomically debits a source wallet and credits a destination wallet, optionally capturing a hold.
+  rpc ExecuteTransfer(TransferRequest) returns (TransferResponse);
+}
+
+// ============================================================================
+// Monetary & Domain Primitive Types
+// ============================================================================
+
+// Money represents a monetary amount with currency and high-precision values
+// using minor units (e.g., cents, pence) to prevent IEEE 754 floating-point inaccuracies.
+message Money {
+  // ISO 4217 three-letter currency code (e.g., "USD", "EUR", "GBP", "INR")
+  string currency = 1;
+
+  // The whole units of the amount (e.g., 100 for $100.50)
+  int64 units = 2;
+
+  // Number of nano (10^-9) units of the amount (-999,999,999 to +999,999,999)
+  // E.g., for $100.50, units=100 and nanos=500,000,000.
+  int32 nanos = 3;
+
+  // Amount in minor currency units (e.g., cents: 10050 for $100.50)
+  // Provided for convenient integer-based database and ledger operations.
+  int64 minor_units = 4;
+}
+
+enum WalletStatus {
+  WALLET_STATUS_UNSPECIFIED = 0;
+  WALLET_STATUS_ACTIVE = 1;
+  WALLET_STATUS_FROZEN = 2;
+  WALLET_STATUS_SUSPENDED = 3;
+  WALLET_STATUS_CLOSED = 4;
+}
+
+enum HoldStatus {
+  HOLD_STATUS_UNSPECIFIED = 0;
+  HOLD_STATUS_ACTIVE = 1;
+  HOLD_STATUS_RELEASED = 2;
+  HOLD_STATUS_CAPTURED = 3;
+  HOLD_STATUS_EXPIRED = 4;
+  HOLD_STATUS_REJECTED = 5;
+}
+
+enum TransferStatus {
+  TRANSFER_STATUS_UNSPECIFIED = 0;
+  TRANSFER_STATUS_SUCCESS = 1;
+  TRANSFER_STATUS_PENDING = 2;
+  TRANSFER_STATUS_FAILED_INSUFFICIENT_FUNDS = 3;
+  TRANSFER_STATUS_FAILED_LIMIT_EXCEEDED = 4;
+  TRANSFER_STATUS_FAILED_ACCOUNT_FROZEN = 5;
+  TRANSFER_STATUS_FAILED_FRAUD_REJECTED = 6;
+  TRANSFER_STATUS_FAILED_INTERNAL_ERROR = 7;
+}
+
+// ============================================================================
+// Request / Response Messages
+// ============================================================================
+
+// WalletId specifies the identifier and optional lookup metadata for a wallet.
+message WalletId {
+  // Unique UUID identifier of the wallet
+  string wallet_id = 1;
+
+  // Associated user/account holder ID (used for tenant and identity validation)
+  string user_id = 2;
+
+  // Optional ISO 4217 currency filter
+  string currency = 3;
+}
+
+// BalanceResponse contains real-time ledger accounting details for a wallet.
+message BalanceResponse {
+  // Wallet UUID
+  string wallet_id = 1;
+
+  // Account holder UUID
+  string user_id = 2;
+
+  // ISO 4217 Currency
+  string currency = 3;
+
+  // Funds currently available for withdrawal or transfers (total - locked)
+  Money available_balance = 4;
+
+  // Funds currently reserved under active holds or pending settlements
+  Money locked_balance = 5;
+
+  // Absolute book balance ledger position (available + locked)
+  Money total_balance = 6;
+
+  // Operational status of the wallet
+  WalletStatus status = 7;
+
+  // Millisecond Unix epoch timestamp of the balance calculation
+  int64 last_updated_at = 8;
+}
+
+// HoldRequest reserves funds for a specified duration before settlement.
+message HoldRequest {
+  // Unique hold identifier (client-generated UUID for idempotency)
+  string hold_id = 1;
+
+  // Wallet to reserve funds from
+  string wallet_id = 2;
+
+  // Monetary value to place on hold
+  Money amount = 3;
+
+  // Idempotency key to prevent duplicate holds on distributed retries
+  string idempotency_key = 4;
+
+  // Reason or category for the hold (e.g., "P2P_TRANSFER", "PAYMENT_AUTHORIZATION")
+  string reason = 5;
+
+  // Upstream transaction or business order reference ID
+  string reference_id = 6;
+
+  // Time-to-live in seconds before the hold automatically expires and releases funds
+  int64 ttl_seconds = 7;
+
+  // Additional key-value metadata for audit and fraud evaluation
+  map<string, string> metadata = 8;
+}
+
+// HoldResponse returns the status of the reservation request.
+message HoldResponse {
+  // Identifier of the hold
+  string hold_id = 1;
+
+  // Wallet ID the hold was placed on
+  string wallet_id = 2;
+
+  // Status of the hold
+  HoldStatus status = 3;
+
+  // Amount successfully reserved
+  Money held_amount = 4;
+
+  // Remaining available balance after reserving funds
+  Money remaining_available_balance = 5;
+
+  // Millisecond Unix timestamp when the hold was created
+  int64 created_at = 6;
+
+  // Millisecond Unix timestamp when the hold will expire if not captured
+  int64 expires_at = 7;
+
+  // Error message if hold status is rejected
+  string error_message = 8;
+}
+
+// TransferRequest executes an atomic balance transfer between two wallets.
+message TransferRequest {
+  // Client-generated transaction UUID
+  string transfer_id = 1;
+
+  // Origin wallet being debited
+  string source_wallet_id = 2;
+
+  // Destination wallet being credited
+  string destination_wallet_id = 3;
+
+  // Amount to transfer
+  Money amount = 4;
+
+  // Distributed idempotency key to prevent double debit/credit
+  string idempotency_key = 5;
+
+  // Optional hold_id if funds were pre-authorized via HoldFunds
+  string hold_id = 6;
+
+  // Human-readable transaction narrative / statement description
+  string description = 7;
+
+  // Additional ledger and routing metadata
+  map<string, string> metadata = 8;
+}
+
+// TransferResponse returns the result of the atomic double-entry balance transfer.
+message TransferResponse {
+  // The transfer execution UUID
+  string transfer_id = 1;
+
+  // Result status of the transfer
+  TransferStatus status = 2;
+
+  // Source wallet identifier
+  string source_wallet_id = 3;
+
+  // Destination wallet identifier
+  string destination_wallet_id = 4;
+
+  // Principal amount transferred
+  Money amount_transferred = 5;
+
+  // Transaction fee levied (if applicable)
+  Money fee_amount = 6;
+
+  // Source wallet available balance after debit
+  Money source_available_balance = 7;
+
+  // Destination wallet available balance after credit
+  Money destination_available_balance = 8;
+
+  // Millisecond Unix epoch timestamp of settlement
+  int64 executed_at = 9;
+
+  // Distributed ledger sequence / settlement reference number
+  string transaction_reference = 10;
+
+  // Machine-readable error code if transfer failed
+  string error_code = 11;
+
+  // Human-readable error description
+  string error_message = 12;
+}

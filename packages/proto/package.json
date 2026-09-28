@@ -1,0 +1,18 @@
+{
+  "name": "@flow/proto",
+  "version": "1.0.0",
+  "description": "Shared Protocol Buffer definitions and gRPC service client/server stubs for Flow",
+  "main": "index.js",
+  "type": "module",
+  "files": [
+    "*.proto",
+    "index.js"
+  ],
+  "scripts": {
+    "test": "echo \"No test specified\" && exit 0"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.12.2",
+    "@grpc/proto-loader": "^0.7.13"
+  }
+}

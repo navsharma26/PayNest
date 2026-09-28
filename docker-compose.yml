@@ -1,0 +1,305 @@
+version: '3.8'
+
+networks:
+  flow-network:
+    name: flow-network
+    driver: bridge
+
+volumes:
+  mongo_data:
+    name: flow_mongo_data
+  zookeeper_data:
+    name: flow_zookeeper_data
+  kafka_data:
+    name: flow_kafka_data
+
+services:
+  # ===========================================================================
+  # Storage Layer: MongoDB Replica Set (ACID Multi-Document OCC)
+  # ===========================================================================
+  mongodb:
+    image: mongo:7.0
+    container_name: flow-mongodb
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - flow-network
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval \"db.adminCommand('ping').ok\""]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # Initializer service ensuring rs0 replica set is created before backend starts
+  mongo-init:
+    image: mongo:7.0
+    container_name: flow-mongo-init
+    restart: "no"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - flow-network
+    entrypoint: >
+      bash -c "
+      echo 'Waiting for MongoDB and initializing replica set rs0...';
+      mongosh --host mongodb:27017 --eval '
+        try {
+          const status = rs.status();
+          if (status.ok) {
+            console.log(\"Replica set rs0 is already initialized.\");
+          }
+        } catch (e) {
+          console.log(\"Initiating replica set rs0...\");
+          rs.initiate({
+            _id: \"rs0\",
+            members: [{ _id: 0, host: \"mongodb:27017\" }]
+          });
+          console.log(\"Replica set rs0 initiated successfully.\");
+        }
+      ';
+      "
+
+  # ===========================================================================
+  # Message Streaming Infrastructure: Zookeeper & Apache Kafka
+  # ===========================================================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: flow-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+    networks:
+      - flow-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: flow-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - flow-network
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ===========================================================================
+  # Microservices
+  # ===========================================================================
+  user-service:
+    build:
+      context: .
+      dockerfile: ./services/user-service/Dockerfile
+    container_name: flow-user-service
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+    ports:
+      - "4001:4001"
+    networks:
+      - flow-network
+    environment:
+      PORT: 4001
+      MONGODB_URI: mongodb://mongodb:27017/flow_user_db?replicaSet=rs0&directConnection=true
+      JWT_ACCESS_SECRET: flow_banking_access_jwt_secret_dev_key_2026
+      JWT_REFRESH_SECRET: flow_banking_refresh_jwt_secret_dev_key_2026
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:4001/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  wallet-service:
+    build:
+      context: .
+      dockerfile: ./services/wallet-service/Dockerfile
+    container_name: flow-wallet-service
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+    ports:
+      - "4002:4002"
+      - "50051:50051"
+    networks:
+      - flow-network
+    environment:
+      HTTP_PORT: 4002
+      GRPC_PORT: 50051
+      MONGODB_URI: mongodb://mongodb:27017/flow_wallet_db?replicaSet=rs0&directConnection=true
+      KAFKA_BROKERS: kafka:29092
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:4002/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  fraud-detection-service:
+    build:
+      context: .
+      dockerfile: ./services/fraud-detection-service/Dockerfile
+    container_name: flow-fraud-detection-service
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "4004:4004"
+    networks:
+      - flow-network
+    environment:
+      PORT: 4004
+      KAFKA_BROKERS: kafka:29092
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:4004/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: ./services/notification-service/Dockerfile
+    container_name: flow-notification-service
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "4005:4005"
+    networks:
+      - flow-network
+    environment:
+      PORT: 4005
+      KAFKA_BROKERS: kafka:29092
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:4005/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  transaction-service:
+    build:
+      context: .
+      dockerfile: ./services/transaction-service/Dockerfile
+    container_name: flow-transaction-service
+    depends_on:
+      wallet-service:
+        condition: service_healthy
+      fraud-detection-service:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "4003:4003"
+    networks:
+      - flow-network
+    environment:
+      PORT: 4003
+      WALLET_GRPC_HOST: wallet-service:50051
+      FRAUD_SERVICE_URL: http://fraud-detection-service:4004
+      KAFKA_BROKERS: kafka:29092
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:4003/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # ===========================================================================
+  # Client Facade: Apollo GraphQL BFF Gateway
+  # ===========================================================================
+  graphql-gateway:
+    build:
+      context: .
+      dockerfile: ./gateway/graphql-gateway/Dockerfile
+    container_name: flow-graphql-gateway
+    depends_on:
+      wallet-service:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      transaction-service:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    networks:
+      - flow-network
+    environment:
+      PORT: 4000
+      WALLET_GRPC_HOST: wallet-service:50051
+      TRANSACTION_SERVICE_URL: http://transaction-service:4003
+      NOTIFICATION_SERVICE_URL: http://notification-service:4005
+      JWT_ACCESS_SECRET: flow_banking_access_jwt_secret_dev_key_2026
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:4000/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # ===========================================================================
+  # Web App: React 18 + Tailwind CSS SPA (Served via Nginx Alpine)
+  # ===========================================================================
+  client-frontend:
+    build:
+      context: .
+      dockerfile: ./client/frontend/Dockerfile
+    container_name: flow-client-frontend
+    depends_on:
+      graphql-gateway:
+        condition: service_healthy
+    ports:
+      - "3000:80"
+    networks:
+      - flow-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:80/health || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

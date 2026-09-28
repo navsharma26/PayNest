@@ -1,0 +1,10 @@
+{
+  "name": "@flow/kafka",
+  "version": "1.0.0",
+  "description": "Shared Kafka messaging abstractions, topic definitions, and resilient producer/consumer wrappers for Flow",
+  "main": "index.js",
+  "type": "module",
+  "dependencies": {
+    "kafkajs": "^2.2.4"
+  }
+}
